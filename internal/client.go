@@ -285,7 +285,7 @@ type (
 		CountWorkflow(ctx context.Context, request *workflowservice.CountWorkflowExecutionsRequest) (*workflowservice.CountWorkflowExecutionsResponse, error)
 
 		// GetSearchAttributes returns valid search attributes keys and value types.
-		// The search attributes can be used in query of List/Scan/Count APIs. Adding new search attributes requires temporal server
+		// The search attributes can be used in query of List/Scan/Count APIs. Adding new search attributes requires Temporal server
 		// to update dynamic config ValidSearchAttributes.
 		GetSearchAttributes(ctx context.Context) (*workflowservice.GetSearchAttributesResponse, error)
 
@@ -293,13 +293,13 @@ type (
 		// and queryType are required, other parameters are optional. The workflowID and runID (optional) identify the
 		// target workflow execution that this query will be send to. If runID is not specified (empty string), server will
 		// use the currently running execution of that workflowID. The queryType specifies the type of query you want to
-		// run. By default, temporal supports "__stack_trace" as a standard query type, which will return string value
+		// run. By default, Temporal supports "__stack_trace" as a standard query type, which will return string value
 		// representing the call stack of the target workflow. The target workflow could also setup different query handler
 		// to handle custom query types.
 		// See comments at workflow.SetQueryHandler(ctx Context, queryType string, handler interface{}) for more details
 		// on how to setup query handler within the target workflow.
 		// - workflowID is required.
-		// - runID can be default(empty string). if empty string then it will pick the running execution of that workflow ID.
+		// - runID can be default(empty string). If the string is empty, it will select the running execution for that workflow ID.
 		// - queryType is the type of the query.
 		// - args... are the optional query parameters.
 		// The errors it can return:
@@ -746,7 +746,7 @@ type (
 	// NamespaceClient is the client for managing operations on the namespace.
 	// CLI, tools, ... can use this layer to manager operations on namespace.
 	NamespaceClient interface {
-		// Register a namespace with temporal server
+		// Register a namespace with Temporal server
 		// The errors it can throw:
 		//  - NamespaceAlreadyExistsError
 		//  - serviceerror.InvalidArgument
@@ -831,7 +831,7 @@ func newClient(ctx context.Context, options ClientOptions, existing *WorkflowCli
 
 	if options.Logger == nil {
 		options.Logger = ilog.NewDefaultLogger()
-		options.Logger.Info("No logger configured for temporal client. Created default one.")
+		options.Logger.Info("No logger configured for Temporal client. Created default one.")
 	}
 
 	if options.Credentials != nil {
