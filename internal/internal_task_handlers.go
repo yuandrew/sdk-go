@@ -964,6 +964,7 @@ processWorkflowLoop:
 						}
 
 						// force complete, call the workflow task heartbeat function
+						fmt.Println("force complete, call the workflow task heartbeat function")
 						workflowTask, err = heartbeatFunc(
 							workflowContext.CompleteWorkflowTask(workflowTask, false),
 							startTime,
@@ -1008,7 +1009,18 @@ processWorkflowLoop:
 
 					case lar := <-workflowTask.laResultCh:
 						// local activity result ready
+						fmt.Println("[ProcessWFT] // local activity result ready")
+						fmt.Println("[lar] err", lar.err)
+						//fmt.Printf("\tlar.err is of type %T\n", lar.err)
+						var appErr *ApplicationError
+						//fmt.Println("\t", ErrWorkerShutdown, errors.As(lar.err, &appErr), lar.err.Error() == ErrWorkerShutdown.Error())
+
 						response, err = workflowContext.ProcessLocalActivityResult(workflowTask, lar)
+						if errors.As(lar.err, &appErr) {
+							fmt.Println("lar.err is canceled")
+
+							break processWorkflowLoop
+						}
 						if err == nil && response == nil {
 							// workflow task is not done yet, still waiting for more local activities
 							continue waitLocalActivityLoop
@@ -1272,6 +1284,7 @@ ProcessEvents:
 
 func (w *workflowExecutionContextImpl) ProcessLocalActivityResult(workflowTask *workflowTask, lar *localActivityResult) (interface{}, error) {
 	if lar.err != nil && w.retryLocalActivity(lar) {
+		fmt.Println("// nothing to do here as we are retrying...")
 		return nil, nil // nothing to do here as we are retrying...
 	}
 
@@ -1325,11 +1338,14 @@ func (w *workflowExecutionContextImpl) applyWorkflowPanicPolicy(workflowTask *wo
 }
 
 func (w *workflowExecutionContextImpl) retryLocalActivity(lar *localActivityResult) bool {
+	fmt.Println("IsCanceledError(lar.err)", IsCanceledError(lar.err))
 	if lar.task.retryPolicy == nil || lar.err == nil || IsCanceledError(lar.err) {
+		fmt.Println("returning false")
 		return false
 	}
 
 	retryBackoff := getRetryBackoff(lar, time.Now())
+	fmt.Println("retryBackoff", retryBackoff, w.workflowInfo.WorkflowTaskTimeout)
 	if retryBackoff > 0 && retryBackoff <= w.workflowInfo.WorkflowTaskTimeout {
 		// we need a local retry
 		time.AfterFunc(retryBackoff, func() {
@@ -1351,6 +1367,7 @@ func (w *workflowExecutionContextImpl) retryLocalActivity(lar *localActivityResu
 	// The backoff timer will be created by workflow.ExecuteLocalActivity().
 	lar.backoff = retryBackoff
 
+	fmt.Println("returning false end of func")
 	return false
 }
 
@@ -1359,7 +1376,10 @@ func getRetryBackoff(lar *localActivityResult, now time.Time) time.Duration {
 }
 
 func getRetryBackoffWithNowTime(p *RetryPolicy, attempt int32, err error, now, expireTime time.Time) time.Duration {
+	fmt.Println("[getRetryBackoffWithNowTime]")
+	fmt.Println("\terr", err)
 	if !IsRetryable(err, p.NonRetryableErrorTypes) {
+		fmt.Println("\t returning noRetryBackoff")
 		return noRetryBackoff
 	}
 
@@ -2295,7 +2315,15 @@ func (ath *activityTaskHandlerImpl) Execute(taskQueue string, t *workflowservice
 
 	output, err := activityImplementation.Execute(ctx, t.Input)
 	// Check if context canceled at a higher level before we cancel it ourselves
+	// Cancels that don't originate from the server will have separate cancel reasons, like
+	// ErrWorkerShutdown or ErrActivityPaused
+	fmt.Println("ctx.Err()", ctx.Err())
+	fmt.Println("context.Cause(ctx)", context.Cause(ctx))
+	var canceledErr *CanceledError
+	fmt.Println(errors.As(err, &canceledErr), canceledErr)
 	isActivityCanceled := ctx.Err() == context.Canceled && errors.Is(context.Cause(ctx), &CanceledError{})
+	//isActivityCanceled := ctx.Err() == context.Canceled && errors.As(err, &canceledErr)
+	fmt.Println("isActivityCanceled", isActivityCanceled)
 
 	dlCancelFunc()
 	if <-ctx.Done(); ctx.Err() == context.DeadlineExceeded {

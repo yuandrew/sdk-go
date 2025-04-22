@@ -1844,8 +1844,10 @@ func (ts *IntegrationTestSuite) TestSessionStateFailedWorkerFailed() {
 	ts.waitForQueryTrue(run, "sessions-created-equals", 1)
 
 	// Kill the worker, this should cause the session to timeout.
+	fmt.Println("// Kill the worker, this should cause the session to timeout.")
 	ts.worker.Stop()
 	ts.workerStopped = true
+	fmt.Println("kill done")
 
 	// Now create a new worker on that same task queue to resume the work of the
 	// workflow
@@ -1856,6 +1858,16 @@ func (ts *IntegrationTestSuite) TestSessionStateFailedWorkerFailed() {
 
 	// Get the result of the workflow run now
 	err = run.Get(ctx, nil)
+
+	// debug
+	iter := ts.client.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	for iter.HasNext() {
+		event, err := iter.Next()
+		if err != nil {
+			break
+		}
+		fmt.Println("[event]", event)
+	}
 	ts.NoError(err)
 }
 
@@ -7534,7 +7546,7 @@ func (ts *IntegrationTestSuite) TestActivityCancelFromWorkerShutdown() {
 		WorkflowTaskTimeout:      time.Second,
 		WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
 	}
-	run, err := ts.client.ExecuteWorkflow(ctx, options, ts.workflows.WorkflowReactToCancel)
+	run, err := ts.client.ExecuteWorkflow(ctx, options, ts.workflows.WorkflowReactToCancel, false)
 
 	// Give the workflow time to run and run activity
 	time.Sleep(100 * time.Millisecond)
@@ -7548,5 +7560,138 @@ func (ts *IntegrationTestSuite) TestActivityCancelFromWorkerShutdown() {
 	defer nextWorker.Stop()
 
 	err = run.Get(ctx, nil)
+	iter := ts.client.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	for iter.HasNext() {
+		event, err := iter.Next()
+		if err != nil {
+			break
+		}
+		fmt.Println("[event]", event)
+	}
 	ts.NoError(err)
+}
+
+func (ts *IntegrationTestSuite) TestLocalActivityCancelFromWorkerShutdown() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	options := client.StartWorkflowOptions{
+		ID:                       "test-local-activity-cancel" + uuid.NewString(),
+		TaskQueue:                ts.taskQueueName,
+		WorkflowExecutionTimeout: 6 * time.Second,
+		WorkflowTaskTimeout:      2 * time.Second,
+		WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	// TODO: There seems to be a race condition, when error result gets bubbled to task handler first (whenRetryWorker.txt),
+	//  this test passes. But when context cancel comes through first, the test fails (whenWorkerDoesntWork.txt)
+	run, err := ts.client.ExecuteWorkflow(ctx, options, ts.workflows.WorkflowReactToCancel, true)
+
+	// Give the workflow time to run and run activity
+	time.Sleep(100 * time.Millisecond)
+	ts.worker.Stop()
+	ts.workerStopped = true
+	// Now create a new worker on that same task queue to resume the work of the
+	// activity retry
+	nextWorker := worker.New(ts.client, ts.taskQueueName, worker.Options{})
+	ts.registerWorkflowsAndActivities(nextWorker)
+	ts.NoError(nextWorker.Start())
+	defer nextWorker.Stop()
+
+	err = run.Get(ctx, nil)
+	var laCompleted int
+	iter := ts.client.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), true, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	for iter.HasNext() {
+		event, err := iter.Next()
+		if err != nil {
+			break
+		}
+		fmt.Println("[event]", event)
+		attributes := event.GetMarkerRecordedEventAttributes()
+		if event.EventType == enumspb.EVENT_TYPE_MARKER_RECORDED && attributes.MarkerName == "LocalActivity" && attributes.GetFailure() == nil {
+			laCompleted++
+		}
+	}
+	ts.NoError(err)
+	ts.Equal(1, laCompleted)
+}
+
+// Focus on this test
+func (ts *IntegrationTestSuite) TestLocalActivityCanceledNoHeartbeat() {
+	// FYI, setup of this test allows the worker to wait to stop for 10 seconds
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	localActivityFn := func(ctx context.Context, asdf int) error {
+		fmt.Println("[la] started", asdf)
+		time.Sleep(300 * time.Millisecond)
+		return ctx.Err()
+	}
+	workflowFn := func(ctx workflow.Context) error {
+		lactx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+			ScheduleToCloseTimeout: 2 * time.Second,
+			StartToCloseTimeout:    1 * time.Second,
+		})
+		//for {
+		//	localActivity := workflow.ExecuteLocalActivity(lactx, localActivityFn, 1)
+		//	err := localActivity.Get(lactx, nil)
+		//	if err == nil {
+		//		break
+		//	}
+		//}
+		localActivity := workflow.ExecuteLocalActivity(lactx, localActivityFn, 1)
+		err := localActivity.Get(lactx, nil)
+		if err != nil {
+			workflow.GetLogger(lactx).Error("Activity failed.", "Error", err)
+		}
+
+		//fmt.Println("[wf] second LA started")
+		//localActivity = workflow.ExecuteLocalActivity(lactx, localActivityFn, 2)
+		//err = localActivity.Get(lactx, nil)
+		//fmt.Println("[wf] second LA completed")
+		//if err != nil {
+		//	workflow.GetLogger(lactx).Error("Second activity failed.", "Error", err)
+		//}
+		return nil
+	}
+	workflowID := "local-activity-stop-" + uuid.NewString()
+	ts.worker.RegisterWorkflowWithOptions(workflowFn, workflow.RegisterOptions{Name: "local-activity-stop"})
+	startOptions := client.StartWorkflowOptions{
+		ID:                  workflowID,
+		TaskQueue:           ts.taskQueueName,
+		WorkflowTaskTimeout: 2 * time.Second,
+	}
+
+	// Start workflow
+	run, err := ts.client.ExecuteWorkflow(ctx, startOptions, workflowFn)
+	ts.NoError(err)
+	// Stop the worker
+	time.Sleep(100 * time.Millisecond)
+	fmt.Println("worker stopping")
+	ts.worker.Stop()
+	ts.workerStopped = true
+	fmt.Println("worker stopped")
+
+	// Look for activity completed from the history
+	var wftStarted int
+	var wfeCompleted bool
+	iter := ts.client.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(),
+		true, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	for iter.HasNext() {
+		event, err := iter.Next()
+		//fmt.Println("[event]", event.GetEventType())
+		fmt.Println("[event]", event)
+		ts.NoError(err)
+		if event.EventType == enumspb.EVENT_TYPE_WORKFLOW_TASK_STARTED {
+			wftStarted++
+		}
+		if event.EventType == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED {
+			wfeCompleted = true
+		}
+	}
+
+	// Confirm many heartbeats and WFE running
+	ts.Greater(wftStarted, 7)
+	ts.False(wfeCompleted)
 }

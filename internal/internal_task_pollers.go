@@ -630,14 +630,18 @@ func (latp *localActivityTaskPoller) ProcessTask(task interface{}) error {
 	}
 
 	result := latp.handler.executeLocalActivityTask(task.(*localActivityTask))
+	fmt.Println("[ProcessTask] result", result.err) // prints result worker is now shutdown
+
 	// We need to send back the local activity result to unblock workflowTaskPoller.processWorkflowTask() which is
 	// synchronously listening on the laResultCh. We also want to make sure we don't block here forever in case
 	// processWorkflowTask() already returns and nobody is receiving from laResultCh. We guarantee that doneCh is closed
 	// before returning from workflowTaskPoller.processWorkflowTask().
 	select {
 	case result.task.workflowTask.laResultCh <- result:
+		//fmt.Println("[ProcessTask] result.task.workflowTask.laResultCh <- result") // goes down this path
 		return nil
 	case <-result.task.workflowTask.doneCh:
+		//fmt.Println("[ProcessTask] <-result.task.workflowTask.doneCh")
 		// processWorkflowTask() already returns, just drop this local activity result.
 		return nil
 	}
@@ -677,6 +681,7 @@ func (lath *localActivityTaskHandler) executeLocalActivityTask(task *localActivi
 
 	task.Lock()
 	if task.canceled {
+		fmt.Println("TASK CANCELED", task.attempt)
 		task.Unlock()
 		return &localActivityResult{err: ErrCanceled, task: task}
 	}
@@ -725,23 +730,39 @@ func (lath *localActivityTaskHandler) executeLocalActivityTask(task *localActivi
 				"StartToCloseTimeout", task.params.StartToCloseTimeout,
 				"ActualExecutionDuration", executionLatency)
 		}
+		fmt.Println("GOROUTINE RUNNING LOCAL ACTIVITY FINISHED, CLOSING DONECH")
 	}(doneCh)
 
 WaitResult:
 	select {
 	case <-ctx.Done():
+		fmt.Println("<-ctx.Done()")
 		select {
 		case <-doneCh:
 			// double check if result is ready.
+			fmt.Println("BREAKING")
 			break WaitResult
 		default:
 		}
 
+		fmt.Println("I don't think this runs")
+		fmt.Println("\tlaResult", laResult)
+		fmt.Println("\terr", err)
+		fmt.Println("\ttask", task)
+
 		// context is done
+		// TODO: Figure out cancel reason here?
 		if ctx.Err() == context.Canceled {
-			metricsHandler.Counter(metrics.LocalActivityCanceledCounter).Inc(1)
-			metricsHandler.Counter(metrics.LocalActivityExecutionCanceledCounter).Inc(1)
-			return &localActivityResult{err: ErrCanceled, task: task}
+			fmt.Println("LocalActivity canceled!")
+			fmt.Println("\t Cause", context.Cause(ctx))
+			if errors.Is(context.Cause(ctx), &CanceledError{}) {
+				metricsHandler.Counter(metrics.LocalActivityCanceledCounter).Inc(1)
+				metricsHandler.Counter(metrics.LocalActivityExecutionCanceledCounter).Inc(1)
+				fmt.Println("context.Cause(ctx) is CanceledError")
+				return &localActivityResult{err: ErrCanceled, task: task}
+			}
+			return &localActivityResult{err: NewApplicationError(context.Cause(ctx).Error(), context.Cause(ctx).Error(), false, nil), task: task}
+
 		} else if ctx.Err() == context.DeadlineExceeded {
 			if task.params.ScheduleToCloseTimeout != 0 && time.Now().After(info.scheduledTime.Add(task.params.ScheduleToCloseTimeout)) {
 				return &localActivityResult{err: ErrDeadlineExceeded, task: task}
@@ -754,7 +775,15 @@ WaitResult:
 		}
 	case <-doneCh:
 		// local activity completed
+		fmt.Println("// local activity completed")
 	}
+
+	fmt.Println("I don't think this runs pt2")
+	fmt.Println("\tlaResult", laResult)
+	fmt.Println("\terr", err)
+	fmt.Println("\ttask", task)
+	fmt.Println("\t\tctx.Err", ctx.Err())
+	fmt.Println("\t\tCause", context.Cause(ctx))
 
 	if err == nil {
 		metricsHandler.
@@ -1098,13 +1127,16 @@ func (atp *activityTaskPoller) ProcessTask(task interface{}) error {
 	executionStartTime := time.Now()
 	// Process the activity task.
 	request, err := atp.taskHandler.Execute(atp.taskQueueName, activityTask.task)
+	fmt.Println("PROCESSED ACTIVITY TASK")
 	// err is returned in case of internal failure, such as unable to propagate context or context timeout.
 	if err != nil {
 		activityMetricsHandler.Counter(metrics.ActivityExecutionFailedCounter).Inc(1)
 		return err
 	}
 	// in case if activity execution failed, request should be of type RespondActivityTaskFailedRequest
-	if _, ok := request.(*workflowservice.RespondActivityTaskFailedRequest); ok {
+	if req, ok := request.(*workflowservice.RespondActivityTaskFailedRequest); ok {
+		fmt.Println("// in case if activity execution failed, request should be of type RespondActivityTaskFailedRequest")
+		fmt.Println("[RespondActivityTaskFailedRequest]", req)
 		activityMetricsHandler.Counter(metrics.ActivityExecutionFailedCounter).Inc(1)
 	}
 	activityMetricsHandler.Timer(metrics.ActivityExecutionLatency).Record(time.Since(executionStartTime))
@@ -1144,12 +1176,14 @@ func reportActivityComplete(
 	var reportErr error
 	switch rqst := request.(type) {
 	case *workflowservice.RespondActivityTaskCanceledRequest:
+		fmt.Println("case *workflowservice.RespondActivityTaskCanceledRequest:")
 		grpcCtx, cancel := newGRPCContext(ctx, grpcMetricsHandler(rpcMetricsHandler),
 			defaultGrpcRetryParameters(ctx))
 		defer cancel()
 		_, err := service.RespondActivityTaskCanceled(grpcCtx, rqst)
 		reportErr = err
-	case *workflowservice.RespondActivityTaskFailedRequest:
+	case *workflowservice.RespondActivityTaskFailedRequest: // TODO: This is now hitting here not CanceledRequest
+		fmt.Println("case *workflowservice.RespondActivityTaskFailedRequest:")
 		grpcCtx, cancel := newGRPCContext(ctx, grpcMetricsHandler(rpcMetricsHandler), defaultGrpcRetryParameters(ctx))
 		defer cancel()
 		_, err := service.RespondActivityTaskFailed(grpcCtx, rqst)
@@ -1261,6 +1295,7 @@ func convertActivityResultToRespondRequest(
 	if _, isCanceledErr := err.(*CanceledError); isCanceledErr {
 		err = fmt.Errorf("unexpected activity cancel error: %w", err)
 	}
+	fmt.Println("[RespondActivityTaskFailedRequest err]", err)
 
 	return &workflowservice.RespondActivityTaskFailedRequest{
 		TaskToken:         taskToken,

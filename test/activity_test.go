@@ -487,6 +487,7 @@ func (a *Activities) RawValueActivity(ctx context.Context, value converter.RawVa
 }
 
 func (a *Activities) ReactToCancel(ctx context.Context) error {
+	fmt.Println("[ReactToCancel]")
 	select {
 	case <-time.After(1 * time.Second):
 		return nil

@@ -981,6 +981,7 @@ func convertErrDetailsToPayloads(details converter.EncodedValues, dc converter.D
 
 // IsRetryable returns if error retryable or not.
 func IsRetryable(err error, nonRetryableTypes []string) bool {
+	fmt.Println("[IsRetryable]", err)
 	if err == nil {
 		return false
 	}
@@ -989,11 +990,13 @@ func IsRetryable(err error, nonRetryableTypes []string) bool {
 	var canceledErr *CanceledError
 	var workflowPanicErr *workflowPanicError
 	if errors.As(err, &terminatedErr) || errors.As(err, &canceledErr) || errors.As(err, &workflowPanicErr) {
+		fmt.Println("not here")
 		return false
 	}
 
 	var timeoutErr *TimeoutError
 	if errors.As(err, &timeoutErr) {
+		fmt.Println("timeout")
 		return timeoutErr.timeoutType == enumspb.TIMEOUT_TYPE_START_TO_CLOSE || timeoutErr.timeoutType == enumspb.TIMEOUT_TYPE_HEARTBEAT
 	}
 
@@ -1001,6 +1004,8 @@ func IsRetryable(err error, nonRetryableTypes []string) bool {
 	var errType string
 	if errors.As(err, &applicationErr) {
 		if applicationErr.nonRetryable {
+
+			fmt.Println("nonretryable")
 			return false
 		}
 		errType = applicationErr.errType
@@ -1011,10 +1016,12 @@ func IsRetryable(err error, nonRetryableTypes []string) bool {
 
 	for _, nonRetryableType := range nonRetryableTypes {
 		if nonRetryableType == errType {
+			fmt.Println("if nonRetryableType == errType {")
 			return false
 		}
 	}
 
+	fmt.Println("return true, errType", errType)
 	return true
 }
 
