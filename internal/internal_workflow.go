@@ -566,6 +566,7 @@ func (d *syncWorkflowDefinition) Execute(env WorkflowEnvironment, header *common
 	getWorkflowEnvironment(d.rootCtx).RegisterCancelHandler(func() {
 		// It is ok to call this method multiple times.
 		// it doesn't do anything new, the context remains canceled.
+		// TODO: here
 		d.cancel()
 	})
 
@@ -755,6 +756,7 @@ func assertNotInReadOnlyStateCancellation(ctx Context) {
 	// For cancellation the dispatcher may not be running because workflow cancellation
 	// is sent outside of the dispatchers loop.
 	if state.dispatcher.IsClosed() {
+		// TODO: hitting this
 		panic(panicIllegalAccessCoroutineState)
 	}
 	// use the dispatcher state instead of the coroutine state because contexts can be
@@ -1002,6 +1004,7 @@ func (c *channelImpl) Close() {
 	// Use a copy of blockedReceives for iteration as invoking callback could result in modification
 	copy := append(c.blockedReceives[:0:0], c.blockedReceives...)
 	for _, callback := range copy {
+		// TODO: here
 		callback.fn(nil, false)
 	}
 	// All blocked sends are going to panic

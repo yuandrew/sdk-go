@@ -309,6 +309,7 @@ func (c *cancelCtx) cancel(removeFromParent bool, err error) {
 	if alreadyCancelled {
 		return
 	}
+	// TODO: here
 	c.done.Close()
 	c.childrenLock.Lock()
 	children := c.children

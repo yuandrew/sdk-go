@@ -1232,3 +1232,124 @@ func TestDynamicWorkflows(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "dynamic-activity - grape - cherry", result)
 }
+
+type DummyActivityInput struct{}
+
+func DummyActivity(ctx context.Context, d DummyActivityInput) error {
+	return nil
+}
+
+func ActivationWorkflow(ctx Context) error {
+	ctx = WithActivityOptions(ctx, ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+	})
+	GetLogger(ctx).Info("Activation workflow started")
+	if err := Sleep(ctx, time.Hour); err != nil {
+		GetLogger(ctx).Error("Activation workflow failed", "error", err)
+		return err
+	}
+	GetLogger(ctx).Info("Activation workflow completed")
+
+	var err error
+	if errors.Is(ctx.Err(), ErrCanceled) {
+		newCtx, _ := NewDisconnectedContext(ctx)
+		err = ExecuteActivity(newCtx, DummyActivity, DummyActivityInput{}).Get(newCtx, nil)
+		GetLogger(ctx).Info("Activation workflow canceled, running dummy activity in disconnected context")
+	} else {
+		err = ExecuteActivity(ctx, DummyActivity, DummyActivityInput{}).Get(ctx, nil)
+	}
+
+	return err
+}
+func MyCoolWorkflow(ctx Context) error {
+	selector := NewSelector(ctx)
+	var activationWorkflow *WorkflowExecution
+	selector.AddReceive(GetSignalChannel(ctx, "activate"), func(c ReceiveChannel, more bool) {
+		c.Receive(ctx, nil)
+		GetLogger(ctx).Info("Received activation signal")
+		if activationWorkflow != nil {
+			// TODO: bug here
+			fmt.Println("Received activation signal twice")
+			RequestCancelExternalWorkflow(ctx, activationWorkflow.ID, activationWorkflow.RunID)
+			fmt.Println("THIS SHOULD NOT PRINT, JK it should, RequestCancelExternalWorkflow errors out after we call it")
+		}
+
+		cwf := ExecuteChildWorkflow(
+			ctx,
+			ActivationWorkflow,
+		)
+		fmt.Println("1")
+
+		var res WorkflowExecution
+		if err := cwf.GetChildWorkflowExecution().Get(ctx, &res); err != nil {
+			GetLogger(ctx).Error("Failed to start child workflow", "error", err)
+			return
+		}
+		fmt.Println("2")
+		activationWorkflow = &res
+
+		selector.AddFuture(cwf, func(f Future) {
+			if err := f.Get(ctx, nil); err != nil {
+				GetLogger(ctx).Error("Child workflow failed", "error", err)
+			} else {
+				GetLogger(ctx).Info("Child workflow completed successfully")
+			}
+			activationWorkflow = nil
+		})
+	})
+
+	for selector.HasPending() || activationWorkflow != nil {
+		selector.Select(ctx)
+	}
+	return nil
+}
+
+func TestRequestCancelExternalWorkflow(t *testing.T) {
+	testSuite := &WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(ActivationWorkflow)
+	env.RegisterWorkflow(MyCoolWorkflow)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("activate", nil)
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("activate", nil)
+	}, time.Second)
+	env.ExecuteWorkflow(MyCoolWorkflow)
+	require.NoError(t, env.GetWorkflowError())
+	env.IsWorkflowCompleted()
+}
+
+func SleepForever(ctx Context) error {
+	Sleep(ctx, time.Hour)
+	return nil
+}
+
+func CancelSleepForever(ctx Context) error {
+	cwf := ExecuteChildWorkflow(
+		ctx,
+		SleepForever,
+	)
+	var res WorkflowExecution
+	if err := cwf.GetChildWorkflowExecution().Get(ctx, &res); err != nil {
+		GetLogger(ctx).Error("Failed to start child workflow", "error", err)
+		return nil
+	}
+
+	fmt.Println("Child workflow started", res.ID, res.RunID)
+
+	RequestCancelExternalWorkflow(ctx, res.ID, res.RunID)
+	return nil
+}
+
+// This test doesn't repro the issue, likely means selector.AddReceive has a bug
+// where it's not propagating the ctx properly.
+func TestRequestCancelExternalWorkflowSimple(t *testing.T) {
+	testSuite := &WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(SleepForever)
+	env.RegisterWorkflow(CancelSleepForever)
+	env.ExecuteWorkflow(CancelSleepForever)
+	require.NoError(t, env.GetWorkflowError())
+	env.IsWorkflowCompleted()
+}

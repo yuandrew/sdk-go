@@ -819,6 +819,7 @@ func (env *testWorkflowEnvironmentImpl) startMainLoop() {
 		select {
 		case c := <-env.callbackChannel:
 			// this will drain the callbackChannel
+			// TODO: here
 			c.processCallback()
 		default:
 			// nothing to process, main thread is blocked at this moment, now check if we should auto fire next timer
@@ -2280,6 +2281,7 @@ func (env *testWorkflowEnvironmentImpl) RequestCancelChildWorkflow(_, workflowID
 func (env *testWorkflowEnvironmentImpl) RequestCancelExternalWorkflow(namespace, workflowID, runID string, callback ResultHandler) {
 	if env.workflowInfo.WorkflowExecution.ID == workflowID {
 		// cancel current workflow
+		// TODO: here
 		env.workflowCancelHandler()
 		// check if current workflow is a child workflow
 		if env.isChildWorkflow() && env.onChildWorkflowCanceledListener != nil {
@@ -2913,6 +2915,7 @@ func (env *testWorkflowEnvironmentImpl) cancelWorkflow(callback ResultHandler) {
 func (env *testWorkflowEnvironmentImpl) cancelWorkflowByID(workflowID string, runID string, callback ResultHandler) {
 	env.postCallback(func() {
 		// RequestCancelWorkflow needs to be run in main thread
+		// TODO: here
 		env.RequestCancelExternalWorkflow(
 			env.workflowInfo.Namespace,
 			workflowID,

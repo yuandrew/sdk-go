@@ -1521,6 +1521,7 @@ func (wc *workflowEnvironmentInterceptor) NewTimerWithOptions(
 
 	if timerID != nil && cancellable {
 		cancellationCallback.fn = func(v interface{}, more bool) bool {
+			// TODO: This one
 			assertNotInReadOnlyStateCancellation(ctx)
 			if !future.IsReady() {
 				wc.env.RequestCancelTimer(*timerID)
